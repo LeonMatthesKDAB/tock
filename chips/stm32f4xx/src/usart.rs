@@ -144,6 +144,10 @@ register_bitfields![u32,
     ]
 ];
 
+// See Table 13. STM32F427xx and STM32F429xx register boundary addresses
+// of the STM32F429zi datasheet
+const USART1_BASE: StaticRef<UsartRegisters> =
+    unsafe { StaticRef::new(0x40011000 as *const UsartRegisters) };
 const USART2_BASE: StaticRef<UsartRegisters> =
     unsafe { StaticRef::new(0x40004400 as *const UsartRegisters) };
 const USART3_BASE: StaticRef<UsartRegisters> =
@@ -186,6 +190,13 @@ pub struct Usart<'a> {
 // for use by `set_dma`
 pub struct TxDMA<'a>(pub &'a dma1::Stream<'a>);
 pub struct RxDMA<'a>(pub &'a dma1::Stream<'a>);
+
+pub static mut USART1: Usart = Usart::new(
+    USART1_BASE,
+    UsartClock(rcc::PeripheralClock::APB2(rcc::PCLK2::USART1)),
+    Dma1Peripheral::USART1_TX,
+    Dma1Peripheral::USART1_RX,
+);
 
 pub static mut USART2: Usart = Usart::new(
     USART2_BASE,
