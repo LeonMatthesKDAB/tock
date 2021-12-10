@@ -191,12 +191,14 @@ pub struct Usart<'a> {
 pub struct TxDMA<'a>(pub &'a dma1::Stream<'a>);
 pub struct RxDMA<'a>(pub &'a dma1::Stream<'a>);
 
+/* TODO: USART1 uses DMA2, see the "AN4031 Application note"
+ * However, DMA2 is not yet configured in Tock OS.
 pub static mut USART1: Usart = Usart::new(
     USART1_BASE,
     UsartClock(rcc::PeripheralClock::APB2(rcc::PCLK2::USART1)),
     Dma1Peripheral::USART1_TX,
     Dma1Peripheral::USART1_RX,
-);
+);*/
 
 pub static mut USART2: Usart = Usart::new(
     USART2_BASE,

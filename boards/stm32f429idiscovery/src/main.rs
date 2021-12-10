@@ -81,26 +81,26 @@ impl Platform for STM32F429IDiscovery {
 unsafe fn setup_dma() {
     use stm32f429zi::dma1::{Dma1Peripheral, DMA1};
     use stm32f429zi::usart;
-    use stm32f429zi::usart::USART1;
+    use stm32f429zi::usart::USART3;
 
     DMA1.enable_clock();
 
-    let usart1_tx_stream = Dma1Peripheral::USART1_TX.get_stream();
-    let usart1_rx_stream = Dma1Peripheral::USART1_RX.get_stream();
+    let usart3_tx_stream = Dma1Peripheral::USART3_TX.get_stream();
+    let usart3_rx_stream = Dma1Peripheral::USART3_RX.get_stream();
 
-    USART1.set_dma(
-        usart::TxDMA(usart1_tx_stream),
-        usart::RxDMA(usart1_rx_stream),
+    USART3.set_dma(
+        usart::TxDMA(usart3_tx_stream),
+        usart::RxDMA(usart3_rx_stream),
     );
 
-    usart1_tx_stream.set_client(&USART1);
-    usart1_rx_stream.set_client(&USART1);
+    usart3_tx_stream.set_client(&USART3);
+    usart3_rx_stream.set_client(&USART3);
 
-    usart1_tx_stream.setup(Dma1Peripheral::USART1_TX);
-    usart1_rx_stream.setup(Dma1Peripheral::USART1_RX);
+    usart3_tx_stream.setup(Dma1Peripheral::USART3_TX);
+    usart3_rx_stream.setup(Dma1Peripheral::USART3_RX);
 
-    cortexm4::nvic::Nvic::new(Dma1Peripheral::USART1_TX.get_stream_irqn()).enable();
-    cortexm4::nvic::Nvic::new(Dma1Peripheral::USART1_RX.get_stream_irqn()).enable();
+    cortexm4::nvic::Nvic::new(Dma1Peripheral::USART3_TX.get_stream_irqn()).enable();
+    cortexm4::nvic::Nvic::new(Dma1Peripheral::USART3_RX.get_stream_irqn()).enable();
 }
 
 /// Helper function called during bring-up that configures multiplexed I/O.
@@ -112,30 +112,32 @@ unsafe fn set_pin_primary_functions() {
 
     SYSCFG.enable_clock();
 
-    PORT[PortId::B as usize].enable_clock();
+    PORT[PortId::G as usize].enable_clock();
 
-    // User LD2 is connected to PB07. Configure PB07 as `debug_gpio!(0, ...)`
-    PinId::PB07.get_pin().as_ref().map(|pin| {
+    // User LD4 (red) is connected to PG14. Configure PG14 as `debug_gpio!(0, ...)`
+    PinId::PG14.get_pin().as_ref().map(|pin| {
         pin.make_output();
 
         // Configure kernel debug gpios as early as possible
         kernel::debug::assign_gpios(Some(pin), None, None);
     });
 
+    PORT[PortId::D as usize].enable_clock();
+
+    // TODO: pd8 and pd9 (USART3) are not connected to ST-Link on this board.
+    // Configure USART1 instead.
+    PinId::PD08.get_pin().as_ref().map(|pin| {
+        pin.set_mode(Mode::AlternateFunctionMode);
+        // AF7 is USART3_TX
+        pin.set_alternate_function(AlternateFunction::AF7);
+    });
+    PinId::PD09.get_pin().as_ref().map(|pin| {
+        pin.set_mode(Mode::AlternateFunctionMode);
+        // AF7 is USART3_RX
+        pin.set_alternate_function(AlternateFunction::AF7);
+    });
+
     PORT[PortId::A as usize].enable_clock();
-
-    // PA9 and PA10 (USART1) is connected to ST-LINK virtual COM port
-    PinId::PA09.get_pin().as_ref().map(|pin| {
-        pin.set_mode(Mode::AlternateFunctionMode);
-        // AF7 is USART1_TX
-        pin.set_alternate_function(AlternateFunction::AF7);
-    });
-    PinId::PA10.get_pin().as_ref().map(|pin| {
-        pin.set_mode(Mode::AlternateFunctionMode);
-        // AF7 is USART1_RX
-        pin.set_alternate_function(AlternateFunction::AF7);
-    });
-
     // button is connected on pa00
     PinId::PA00.get_pin().as_ref().map(|pin| {
         // By default, upon reset, the pin is in input mode, with no internal
@@ -151,11 +153,13 @@ unsafe fn set_pin_primary_functions() {
     // Enable clocks for GPIO Ports
     // Disable some of them if you don't need some of the GPIOs
     // Ports A, and B are already enabled
+    //           A: already enabled
+    PORT[PortId::B as usize].enable_clock();
     PORT[PortId::C as usize].enable_clock();
-    PORT[PortId::D as usize].enable_clock();
+    //           D: already enabled
     PORT[PortId::E as usize].enable_clock();
     PORT[PortId::F as usize].enable_clock();
-    PORT[PortId::G as usize].enable_clock();
+    //           G: already enabled
     PORT[PortId::H as usize].enable_clock();
 
     // Arduino A0
@@ -241,9 +245,10 @@ pub unsafe fn reset_handler() {
     // Create a shared UART channel for kernel debug.
     // USART1 is only connected to the ST-LINK port in the DISC1 revision of
     // the STM32F429I boards, DISC0 does not have this connection.
-    stm32f429zi::usart::USART1.enable_clock();
+    // We'll have to use usart3 for now, usart1 isn't configured yet.
+    stm32f429zi::usart::USART3.enable_clock();
     let uart_mux = components::console::UartMuxComponent::new(
-        &stm32f429zi::usart::USART1,
+        &stm32f429zi::usart::USART3,
         115200,
         dynamic_deferred_caller,
     )
@@ -285,7 +290,7 @@ pub unsafe fn reset_handler() {
 
     // LEDs
 
-    // Clock to Port A is enabled in `set_pin_primary_functions()`
+    // Clock to Port G is enabled in `set_pin_primary_functions()`
 
     let led = components::led::LedsComponent::new(components::led_component_helper!(
         stm32f429zi::gpio::Pin,
