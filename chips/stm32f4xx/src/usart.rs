@@ -6,8 +6,8 @@ use kernel::hil;
 use kernel::ClockInterface;
 use kernel::ReturnCode;
 
-use crate::dma1;
-use crate::dma1::Dma1Peripheral;
+use crate::dma;
+use crate::dma::{dma1, dma2, DmaPeripheral};
 use crate::rcc;
 
 /// Universal synchronous asynchronous receiver transmitter
@@ -175,10 +175,10 @@ pub struct Usart<'a> {
     tx_client: OptionalCell<&'a dyn hil::uart::TransmitClient>,
     rx_client: OptionalCell<&'a dyn hil::uart::ReceiveClient>,
 
-    tx_dma: OptionalCell<&'a dma1::Stream<'a>>,
-    tx_dma_pid: Dma1Peripheral,
-    rx_dma: OptionalCell<&'a dma1::Stream<'a>>,
-    rx_dma_pid: Dma1Peripheral,
+    tx_dma: OptionalCell<dma::Stream<'a>>,
+    tx_dma_pid: DmaPeripheral,
+    rx_dma: OptionalCell<dma::Stream<'a>>,
+    rx_dma_pid: DmaPeripheral,
 
     tx_len: Cell<usize>,
     rx_len: Cell<usize>,
@@ -188,38 +188,36 @@ pub struct Usart<'a> {
 }
 
 // for use by `set_dma`
-pub struct TxDMA<'a>(pub &'a dma1::Stream<'a>);
-pub struct RxDMA<'a>(pub &'a dma1::Stream<'a>);
+pub struct TxDMA<'a>(pub dma::Stream<'a>);
+pub struct RxDMA<'a>(pub dma::Stream<'a>);
 
-/* TODO: USART1 uses DMA2, see the "AN4031 Application note"
- * However, DMA2 is not yet configured in Tock OS.
-pub static mut USART1: Usart = Usart::new(
+pub static mut USART1: Usart = Usart::new_dma2(
     USART1_BASE,
     UsartClock(rcc::PeripheralClock::APB2(rcc::PCLK2::USART1)),
-    Dma1Peripheral::USART1_TX,
-    Dma1Peripheral::USART1_RX,
-);*/
-
-pub static mut USART2: Usart = Usart::new(
-    USART2_BASE,
-    UsartClock(rcc::PeripheralClock::APB1(rcc::PCLK1::USART2)),
-    Dma1Peripheral::USART2_TX,
-    Dma1Peripheral::USART2_RX,
+    dma2::Dma2Peripheral::USART1_TX,
+    dma2::Dma2Peripheral::USART1_RX,
 );
 
-pub static mut USART3: Usart = Usart::new(
+pub static mut USART2: Usart = Usart::new_dma1(
+    USART2_BASE,
+    UsartClock(rcc::PeripheralClock::APB1(rcc::PCLK1::USART2)),
+    dma1::Dma1Peripheral::USART2_TX,
+    dma1::Dma1Peripheral::USART2_RX,
+);
+
+pub static mut USART3: Usart = Usart::new_dma1(
     USART3_BASE,
     UsartClock(rcc::PeripheralClock::APB1(rcc::PCLK1::USART3)),
-    Dma1Peripheral::USART3_TX,
-    Dma1Peripheral::USART3_RX,
+    dma1::Dma1Peripheral::USART3_TX,
+    dma1::Dma1Peripheral::USART3_RX,
 );
 
 impl<'a> Usart<'a> {
     const fn new(
         base_addr: StaticRef<UsartRegisters>,
         clock: UsartClock,
-        tx_dma_pid: Dma1Peripheral,
-        rx_dma_pid: Dma1Peripheral,
+        tx_dma_pid: DmaPeripheral,
+        rx_dma_pid: DmaPeripheral,
     ) -> Usart<'a> {
         Usart {
             registers: base_addr,
@@ -239,6 +237,34 @@ impl<'a> Usart<'a> {
             usart_tx_state: Cell::new(USARTStateTX::Idle),
             usart_rx_state: Cell::new(USARTStateRX::Idle),
         }
+    }
+
+    const fn new_dma1(
+        base_addr: StaticRef<UsartRegisters>,
+        clock: UsartClock,
+        tx_dma_pid: dma1::Dma1Peripheral,
+        rx_dma_pid: dma1::Dma1Peripheral,
+    ) -> Usart<'a> {
+        Self::new(
+            base_addr,
+            clock,
+            DmaPeripheral::Dma1Peripheral(tx_dma_pid),
+            DmaPeripheral::Dma1Peripheral(rx_dma_pid),
+        )
+    }
+
+    const fn new_dma2(
+        base_addr: StaticRef<UsartRegisters>,
+        clock: UsartClock,
+        tx_dma_pid: dma2::Dma2Peripheral,
+        rx_dma_pid: dma2::Dma2Peripheral,
+    ) -> Usart<'a> {
+        Self::new(
+            base_addr,
+            clock,
+            DmaPeripheral::Dma2Peripheral(tx_dma_pid),
+            DmaPeripheral::Dma2Peripheral(rx_dma_pid),
+        )
     }
 
     pub fn is_enabled_clock(&self) -> bool {
@@ -373,6 +399,38 @@ impl<'a> Usart<'a> {
 
     fn clear_transmit_complete(&self) {
         self.registers.sr.modify(SR::TC::CLEAR);
+    }
+
+    fn transfer_done(&self, pid: DmaPeripheral) {
+        if pid == self.tx_dma_pid {
+            self.usart_tx_state.set(USARTStateTX::Transfer_Completing);
+            self.enable_transmit_complete_interrupt();
+        } else if pid == self.rx_dma_pid {
+            // In case of RX, we can call the client directly without having
+            // to trigger an interrupt.
+            if self.usart_rx_state.get() == USARTStateRX::DMA_Receiving {
+                self.disable_rx();
+                self.usart_rx_state.set(USARTStateRX::Idle);
+
+                // get buffer
+                let buffer = self.rx_dma.map_or(None, |rx_dma| rx_dma.return_buffer());
+
+                let length = self.rx_len.get();
+                self.rx_len.set(0);
+
+                // alert client
+                self.rx_client.map(|client| {
+                    buffer.map(|buf| {
+                        client.received_buffer(
+                            buf,
+                            length,
+                            ReturnCode::SUCCESS,
+                            hil::uart::Error::None,
+                        );
+                    });
+                });
+            }
+        }
     }
 }
 
@@ -511,35 +569,13 @@ impl<'a> hil::uart::Uart<'a> for Usart<'a> {}
 
 impl dma1::StreamClient for Usart<'_> {
     fn transfer_done(&self, pid: dma1::Dma1Peripheral) {
-        if pid == self.tx_dma_pid {
-            self.usart_tx_state.set(USARTStateTX::Transfer_Completing);
-            self.enable_transmit_complete_interrupt();
-        } else if pid == self.rx_dma_pid {
-            // In case of RX, we can call the client directly without having
-            // to trigger an interrupt.
-            if self.usart_rx_state.get() == USARTStateRX::DMA_Receiving {
-                self.disable_rx();
-                self.usart_rx_state.set(USARTStateRX::Idle);
+        self.transfer_done(pid.into());
+    }
+}
 
-                // get buffer
-                let buffer = self.rx_dma.map_or(None, |rx_dma| rx_dma.return_buffer());
-
-                let length = self.rx_len.get();
-                self.rx_len.set(0);
-
-                // alert client
-                self.rx_client.map(|client| {
-                    buffer.map(|buf| {
-                        client.received_buffer(
-                            buf,
-                            length,
-                            ReturnCode::SUCCESS,
-                            hil::uart::Error::None,
-                        );
-                    });
-                });
-            }
-        }
+impl dma2::StreamClient for Usart<'_> {
+    fn transfer_done(&self, pid: dma2::Dma2Peripheral) {
+        self.transfer_done(pid.into());
     }
 }
 

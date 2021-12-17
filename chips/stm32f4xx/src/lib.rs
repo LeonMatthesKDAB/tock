@@ -13,7 +13,8 @@ pub mod nvic;
 // Peripherals
 pub mod adc;
 pub mod dbg;
-pub mod dma1;
+pub mod dma;
+pub use dma::dma1; // for backwards compatibility, old import still sometimes used by boards
 pub mod exti;
 pub mod gpio;
 pub mod i2c;
