@@ -5,7 +5,7 @@ use cortexm4;
 use kernel::Chip;
 
 use crate::adc;
-use crate::dma1;
+use crate::dma::{dma1, dma2};
 use crate::exti;
 use crate::i2c;
 use crate::nvic;
@@ -59,6 +59,14 @@ impl Chip for Stm32f4xx {
                             .get_stream()
                             .handle_interrupt(),
 
+                        nvic::DMA2_Stream5 => dma2::Dma2Peripheral::USART1_RX
+                            .get_stream()
+                            .handle_interrupt(),
+                        nvic::DMA2_Stream7 => dma2::Dma2Peripheral::USART1_TX
+                            .get_stream()
+                            .handle_interrupt(),
+
+                        nvic::USART1 => usart::USART1.handle_interrupt(),
                         nvic::USART2 => usart::USART2.handle_interrupt(),
                         nvic::USART3 => usart::USART3.handle_interrupt(),
 
